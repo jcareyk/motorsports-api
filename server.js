@@ -4,13 +4,37 @@ import cors from "cors";
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// ====== CONFIG ======
+// Put your real API key in Azure App Settings / local environment
+const ODDS_API_KEY = process.env.ODDS_API_KEY || "";
+const POLL_MS = Number(process.env.POLL_MS || 10000);
+
+// These sport keys are placeholders until you confirm the exact motorsports keys
+// available on your The Odds API plan/account.
+const SPORT_KEYS = {
+  nascar: process.env.ODDS_API_SPORT_NASCAR || "racing_nascar",
+  indycar: process.env.ODDS_API_SPORT_INDYCAR || "racing_indycar",
+  imsa: process.env.ODDS_API_SPORT_IMSA || "racing_imsa",
+  "mx-5 cup": process.env.ODDS_API_SPORT_MX5 || "racing_mx5_cup",
+};
+
+// Use bookmaker keys from The Odds API once you confirm exact names on your account.
+const BOOKMAKERS = (
+  process.env.ODDS_API_BOOKMAKERS ||
+  "draftkings,fanduel,betmgm,caesars"
+).split(",");
+
+// Markets to request. h2h is the most reliable/common market in The Odds API docs.
+// Outright/winner-style motorsports coverage may vary by sport key/account.
+const MARKETS = (process.env.ODDS_API_MARKETS || "h2h").split(",");
+
 app.use(cors());
 app.use(express.json());
 
+// ====== HELPERS ======
 const NAME_ALIASES = {
   "wm byron": "william byron",
   "john hunter nemechek": "john h nemechek",
-  "shane van gisbergen": "shane van gisbergen",
   "svg": "shane van gisbergen",
 };
 
@@ -25,7 +49,23 @@ function normalizeName(name) {
   return NAME_ALIASES[cleaned] || cleaned;
 }
 
-const buildRow = (driver, team, pos, overrides = {}) => {
+function parseAmericanOdds(odds) {
+  if (typeof odds !== "string") return Number.POSITIVE_INFINITY;
+  const n = Number(odds.replace("+", ""));
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
+
+function bestAmericanOdds(oddsList) {
+  if (!Array.isArray(oddsList) || oddsList.length === 0) return null;
+  return [...oddsList].sort((a, b) => parseAmericanOdds(a) - parseAmericanOdds(b))[0];
+}
+
+function computeMove(current, previous) {
+  if (!current || !previous || current === previous) return "flat";
+  return parseAmericanOdds(current) < parseAmericanOdds(previous) ? "down" : "up";
+}
+
+function buildRow(driver, team, pos, overrides = {}) {
   const generatedWinnerOdds =
     pos <= 3 ? "+1200" :
     pos <= 6 ? "+1600" :
@@ -61,7 +101,7 @@ const buildRow = (driver, team, pos, overrides = {}) => {
   return {
     driver,
     team,
-    book: "DraftKings",
+    book: "Best Available",
     winnerOdds: generatedWinnerOdds,
     winnerPrev: generatedWinnerPrev,
     winnerMove: "down",
@@ -81,20 +121,23 @@ const buildRow = (driver, team, pos, overrides = {}) => {
       pos <= 12 ? "-105" :
       pos <= 20 ? "+105" : "+125",
     spreadMove: pos <= 12 ? "down" : "up",
+    perBook: {},
+    books: 0,
     pos,
-    ...overrides
+    ...overrides,
   };
-};
+}
 
-const DATA = {
+// ====== BASE FALLBACK DATA ======
+const BASE_DATA = {
   nascar: {
     updatedAt: new Date().toISOString(),
     event: {
-      name: "Straight Talk Wireless 500",
+      name: "NASCAR Event",
       status: "Live",
-      books: 1,
+      books: 0,
       source: "Backend preview feed",
-      sourceUpdatedLabel: "Backend live now"
+      sourceUpdatedLabel: "Fallback mode",
     },
     rows: [
       buildRow("Ryan Blaney", "Team Penske", 1),
@@ -133,17 +176,17 @@ const DATA = {
       buildRow("Michael McDowell", "Spire Motorsports", 34),
       buildRow("Carson Hocevar", "Spire Motorsports", 35),
       buildRow("Connor Zilisch", "Trackhouse Racing", 36),
-      buildRow("Shane Van Gisbergen", "Trackhouse Racing", 37)
-    ]
+      buildRow("Shane Van Gisbergen", "Trackhouse Racing", 37),
+    ],
   },
   indycar: {
     updatedAt: new Date().toISOString(),
     event: {
-      name: "Good Ranchers 250",
+      name: "IndyCar Event",
       status: "Live",
-      books: 1,
+      books: 0,
       source: "Backend preview feed",
-      sourceUpdatedLabel: "Backend live now"
+      sourceUpdatedLabel: "Fallback mode",
     },
     rows: [
       buildRow("Josef Newgarden", "Team Penske", 1),
@@ -170,102 +213,123 @@ const DATA = {
       buildRow("Dennis Hauger", "Dale Coyne Racing", 22),
       buildRow("Caio Collet", "A.J. Foyt Enterprises", 23),
       buildRow("Felix Rosenqvist", "Meyer Shank w/ Curb-Agajanian", 24),
-      buildRow("Will Power", "Andretti Global", 25)
-    ]
+      buildRow("Will Power", "Andretti Global", 25),
+    ],
   },
   imsa: {
     updatedAt: new Date().toISOString(),
     event: {
-      name: "Sebring Placeholder",
+      name: "IMSA Event",
       status: "Live",
-      books: 1,
+      books: 0,
       source: "Backend preview feed",
-      sourceUpdatedLabel: "Backend live now"
+      sourceUpdatedLabel: "Fallback mode",
     },
     rows: [
       buildRow("Felipe Nasr", "Porsche Penske", 1),
-      buildRow("Tom Blomqvist", "Acura Meyer Shank", 2)
-    ]
+      buildRow("Tom Blomqvist", "Acura Meyer Shank", 2),
+    ],
   },
   "mx-5 cup": {
     updatedAt: new Date().toISOString(),
     event: {
-      name: "MX-5 Cup Demo",
+      name: "MX-5 Cup Event",
       status: "Live",
-      books: 1,
+      books: 0,
       source: "Backend preview feed",
-      sourceUpdatedLabel: "Backend live now"
+      sourceUpdatedLabel: "Fallback mode",
     },
     rows: [
       buildRow("Connor Zilisch", "BSI", 1),
-      buildRow("Gresham Wagner", "JTR", 2)
-    ]
-  }
+      buildRow("Gresham Wagner", "JTR", 2),
+    ],
+  },
 };
 
-function getDraftKingsEventGroupId(series) {
-  const ids = {
-    nascar: process.env.DK_EVENT_GROUP_NASCAR || "88670866",
-    indycar: process.env.DK_EVENT_GROUP_INDYCAR || "88670867",
-    imsa: process.env.DK_EVENT_GROUP_IMSA || "88670868",
-    "mx-5 cup": process.env.DK_EVENT_GROUP_MX5 || "88670869",
-  };
-  return ids[series];
-}
+// ====== IN-MEMORY CACHE ======
+const snapshots = {
+  nascar: structuredClone(BASE_DATA.nascar),
+  indycar: structuredClone(BASE_DATA.indycar),
+  imsa: structuredClone(BASE_DATA.imsa),
+  "mx-5 cup": structuredClone(BASE_DATA["mx-5 cup"]),
+};
 
-async function fetchDraftKingsRaw(series) {
-  const eventGroupId = getDraftKingsEventGroupId(series);
-  if (!eventGroupId) return null;
+const health = {
+  status: "starting",
+  lastPollAt: null,
+  lastSuccessAt: null,
+  message: "Poller booting",
+};
 
-  const url = `https://sportsbook-nash-usmi.draftkings.com/sites/US-MI-SB/api/v5/eventgroups/${eventGroupId}?format=json`;
+// ====== THE ODDS API ======
+async function fetchOddsApiForSeries(series) {
+  if (!ODDS_API_KEY) {
+    throw new Error("Missing ODDS_API_KEY");
+  }
 
-  const response = await fetch(url, {
+  const sportKey = SPORT_KEYS[series];
+  if (!sportKey) {
+    throw new Error(`No sport key configured for ${series}`);
+  }
+
+  const url = new URL(`https://api.the-odds-api.com/v4/sports/${sportKey}/odds`);
+  url.searchParams.set("apiKey", ODDS_API_KEY);
+  url.searchParams.set("regions", "us");
+  url.searchParams.set("oddsFormat", "american");
+  url.searchParams.set("bookmakers", BOOKMAKERS.join(","));
+  url.searchParams.set("markets", MARKETS.join(","));
+
+  const response = await fetch(url.toString(), {
     method: "GET",
     headers: {
-      "User-Agent": "Mozilla/5.0",
-      Accept: "application/json, text/plain, */*",
+      Accept: "application/json",
     },
   });
 
   if (!response.ok) {
-    throw new Error(`DraftKings returned ${response.status}`);
+    const body = await response.text();
+    throw new Error(`The Odds API returned ${response.status}: ${body}`);
   }
 
   return await response.json();
 }
 
-function extractWinnerOddsMap(rawJson) {
+// The Odds API is event-based. For motorsports outrights, the shape can differ from team sports.
+// This extractor is defensive and tries to gather participant/outcome prices from bookmakers.
+function extractOutcomeMapFromOddsApi(rawEvents) {
   const map = {};
-  const offerCategories =
-    rawJson?.eventGroup?.offerCategories || rawJson?.offerCategories || [];
 
-  for (const category of offerCategories) {
-    for (const descriptor of category?.offerSubcategoryDescriptors || []) {
-      const offerRows = descriptor?.offerSubcategory?.offers || [];
-      for (const offerRow of offerRows) {
-        for (const offer of offerRow || []) {
-          const offerLabel = `${offer?.label || ""} ${offer?.subcategoryName || ""}`.toLowerCase();
-          const looksLikeWinnerMarket =
-            offerLabel.includes("winner") ||
-            offerLabel.includes("outright") ||
-            offerLabel.includes("race winner");
+  for (const event of rawEvents || []) {
+    for (const bookmaker of event?.bookmakers || []) {
+      const bookTitle = bookmaker?.title || bookmaker?.key || "Unknown";
+      for (const market of bookmaker?.markets || []) {
+        const marketKey = market?.key || "";
 
-          if (!looksLikeWinnerMarket && offer?.outcomes?.length !== 1 && offer?.outcomes?.length < 10) {
-            continue;
+        for (const outcome of market?.outcomes || []) {
+          const name = outcome?.name;
+          const price = outcome?.price;
+
+          if (!name || price === undefined || price === null) continue;
+
+          const american = String(price).startsWith("+") || String(price).startsWith("-")
+            ? String(price)
+            : Number(price) >= 0
+            ? `+${price}`
+            : String(price);
+
+          const normalized = normalizeName(name);
+          if (!map[normalized]) {
+            map[normalized] = {
+              winnerByBook: {},
+              moneylineByBook: {},
+            };
           }
 
-          for (const outcome of offer?.outcomes || []) {
-            const driverName = outcome?.label || outcome?.participant || outcome?.name;
-            const americanOdds =
-              outcome?.oddsAmerican ||
-              outcome?.odds ||
-              outcome?.displayOdds?.american;
-
-            if (!driverName || !americanOdds) continue;
-
-            map[normalizeName(driverName)] = {
-              winnerOdds: String(americanOdds),
-            };
+          // For this first integration, h2h maps to moneyline and anything else gets treated as winner-like.
+          if (marketKey === "h2h") {
+            map[normalized].moneylineByBook[bookTitle] = american;
+          } else {
+            map[normalized].winnerByBook[bookTitle] = american;
           }
         }
       }
@@ -275,62 +339,166 @@ function extractWinnerOddsMap(rawJson) {
   return map;
 }
 
-function patchRowsWithRealOdds(rows, oddsMap) {
+function patchRowsWithOddsApi(rows, outcomeMap) {
   return rows.map((row) => {
-    const key = normalizeName(row.driver);
-    const real = oddsMap[key];
+    const normalized = normalizeName(row.driver);
+    const real = outcomeMap[normalized];
 
-    if (!real?.winnerOdds) return row;
+    if (!real) return row;
 
-    const previousWinner = row.winnerOdds;
-    const nextWinner = real.winnerOdds;
+    const winnerPrices = Object.values(real.winnerByBook || {});
+    const moneylinePrices = Object.values(real.moneylineByBook || {});
+
+    const bestWinner = bestAmericanOdds(winnerPrices);
+    const bestMoneyline = bestAmericanOdds(moneylinePrices);
+
+    const nextWinner = bestWinner || row.winnerOdds;
+    const nextMoneyline = bestMoneyline || row.moneyline;
+
+    const perBook = {
+      ...(real.winnerByBook || {}),
+      ...(real.moneylineByBook || {}),
+    };
 
     return {
       ...row,
+      book: Object.keys(perBook).length ? "Best Available" : row.book,
+      winnerPrev: row.winnerOdds,
       winnerOdds: nextWinner,
-      winnerPrev: previousWinner,
-      winnerMove:
-        nextWinner === previousWinner
-          ? "flat"
-          : parseInt(nextWinner.replace("+", ""), 10) <
-            parseInt(previousWinner.replace("+", ""), 10)
-          ? "down"
-          : "up",
-      eventSource: "DraftKings prototype feed"
+      winnerMove: computeMove(nextWinner, row.winnerOdds),
+      moneylinePrev: row.moneyline,
+      moneyline: nextMoneyline,
+      moneylineMove: computeMove(nextMoneyline, row.moneyline),
+      perBook,
+      books: Object.keys(perBook).length,
     };
   });
 }
 
+async function pollSeries(series) {
+  const fallback = structuredClone(BASE_DATA[series]);
+
+  try {
+    const rawEvents = await fetchOddsApiForSeries(series);
+    const outcomeMap = extractOutcomeMapFromOddsApi(rawEvents);
+    const rows = patchRowsWithOddsApi(fallback.rows, outcomeMap);
+
+    snapshots[series] = {
+      ...fallback,
+      updatedAt: new Date().toISOString(),
+      event: {
+        ...fallback.event,
+        books: BOOKMAKERS.length,
+        source: "The Odds API",
+        sourceUpdatedLabel: "Live polled feed",
+      },
+      rows,
+    };
+  } catch (error) {
+    console.error(`Polling failed for ${series}:`, error.message);
+    snapshots[series] = {
+      ...fallback,
+      updatedAt: new Date().toISOString(),
+      event: {
+        ...fallback.event,
+        books: 0,
+        source: "Backend preview feed",
+        sourceUpdatedLabel: "Fallback after API failure",
+      },
+    };
+  }
+}
+
+async function pollAll() {
+  health.lastPollAt = new Date().toISOString();
+
+  try {
+    await Promise.all(Object.keys(snapshots).map((series) => pollSeries(series)));
+    health.lastSuccessAt = new Date().toISOString();
+    health.status = "ok";
+    health.message = "Polling healthy";
+  } catch (error) {
+    health.status = "error";
+    health.message = error instanceof Error ? error.message : "Unknown polling error";
+  }
+}
+
+// ====== ROUTES ======
 app.get("/", (req, res) => {
   res.json({ message: "Motorsports API is running" });
 });
 
 app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
+  res.json(health);
 });
 
-app.get("/widget/odds", async (req, res) => {
+app.get("/widget/odds", (req, res) => {
   const series = String(req.query.series || "nascar").toLowerCase();
-  const payload = structuredClone(DATA[series] || DATA.nascar);
+  const snapshot = snapshots[series] || snapshots.nascar;
+  return res.json(snapshot);
+});
+
+app.get("/sports-check", async (req, res) => {
+  if (!ODDS_API_KEY) {
+    return res.status(400).json({
+      error: "Missing ODDS_API_KEY"
+    });
+  }
 
   try {
-    const raw = await fetchDraftKingsRaw(series);
-    const winnerOddsMap = extractWinnerOddsMap(raw);
+    const url = new URL("https://api.the-odds-api.com/v4/sports");
+    url.searchParams.set("apiKey", ODDS_API_KEY);
 
-    payload.rows = patchRowsWithRealOdds(payload.rows, winnerOddsMap);
-    payload.updatedAt = new Date().toISOString();
-    payload.event.source = "DraftKings prototype feed";
-    payload.event.sourceUpdatedLabel = "Live prototype";
-    return res.json(payload);
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Accept: "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      return res.status(response.status).json({
+        error: `The Odds API returned ${response.status}`,
+        body
+      });
+    }
+
+    const sports = await response.json();
+
+    const motorsportsOnly = sports.filter((sport) => {
+      const key = String(sport.key || "").toLowerCase();
+      const title = String(sport.title || "").toLowerCase();
+      const group = String(sport.group || "").toLowerCase();
+
+      return (
+        key.includes("racing") ||
+        key.includes("nascar") ||
+        key.includes("indy") ||
+        key.includes("motorsport") ||
+        title.includes("nascar") ||
+        title.includes("indy") ||
+        title.includes("racing") ||
+        group.includes("racing")
+      );
+    });
+
+    return res.json({
+      totalSports: sports.length,
+      motorsportsOnly
+    });
   } catch (error) {
-    console.error(`DraftKings fetch failed for ${series}`, error);
-    payload.updatedAt = new Date().toISOString();
-    payload.event.source = "Backend preview feed";
-    payload.event.sourceUpdatedLabel = "Fallback preview";
-    return res.json(payload);
+    console.error("sports-check failed", error);
+    return res.status(500).json({
+      error: "sports-check failed",
+      message: error instanceof Error ? error.message : "Unknown error"
+    });
   }
 });
 
-app.listen(PORT, () => {
+// ====== START ======
+app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
+  await pollAll();
+  setInterval(pollAll, POLL_MS);
 });
